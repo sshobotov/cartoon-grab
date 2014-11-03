@@ -2,21 +2,25 @@ package main
 
 import (
     "flag"
-    //"os"
-    "image"
     "fmt"
-    //"io/ioutil"
+    "strings"
     "net/http"
     "launchpad.net/xmlpath"
 	"code.google.com/p/gofpdf"
+    "code.google.com/p/go-uuid/uuid"
 )
 
-var sourceUrl       = flag.String("u", "", "Source URL")
-var imageXPath      = flag.String("i", "", "Image xPath on the page")
-var nextPageXPath   = flag.String("l", "", "Next page link xPath on the page")
-const (
-    userAgent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/38.0.2125.111 Safari/537.36"
+var (
+    initialUrl      = flag.String("u", "", "Source URL")
+    imageXPath      = flag.String("i", "", "Image xPath on the page")
+    nextPageXPath   = flag.String("l", "", "Next page link xPath on the page")
+    baseUrl string
 )
+const (
+    userAgent       = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/38.0.2125.111 Safari/537.36"
+)
+
+// cartoon-grab -u "http://www.mangareader.net/toukyou-kushu/1" -i "//table[@class='episode-table']//*[@id='imgholder']/a/img/@src" -l "//table[@class='episode-table']//*[@id='imgholder']/a/@href"
 
 func main() {
     flag.Parse()
@@ -25,6 +29,9 @@ func main() {
         fmt.Println("Use -u to setup source url")
         return
     }
+    urlParts := strings.SplitN(*initialUrl, "/", 4)
+    baseUrl = urlParts[0] + "//" + urlParts[2]
+
     if *imageXPath == "" {
         fmt.Println("Use -i to setup image xPath")
         return
@@ -36,16 +43,30 @@ func main() {
     pdf := gofpdf.New("P", "mm", "A4", "")
     client := &http.Client{}
 
-    makePage(client, pdf, *initialUrl);
+    if ok := makePage(client, pdf, *initialUrl); ok {
+        pdf.OutputFileAndClose(uuid.New() + ".pdf")
+        fmt.Println("Done")
+    }
 }
 
-func makePage(client *http.Client, pdf *gofpdf.Fpdf, pageUrl string) (success boolean) {
+func makePage(client *http.Client, pdf *gofpdf.Fpdf, pageUrl string) (success bool) {
     success = true
 
     if imgUrl, nextUrl, ok := collect(client, pageUrl); ok {
-        add(pdf, imgUrl)
+        if imgUrl == "" {
+            return
+        }
+        added := add(client, pdf, imgUrl)
+        if !added {
+            success = false
+            return
+        }
         if nextUrl != "" {
-            makePage(client, pdf, nextUrl)
+            if (strings.HasPrefix(nextUrl, "/")) {
+                nextUrl = baseUrl + nextUrl
+            }
+            fmt.Println("Next:", nextUrl)
+            success = makePage(client, pdf, nextUrl)
         }
     } else {
         success = false
@@ -53,79 +74,80 @@ func makePage(client *http.Client, pdf *gofpdf.Fpdf, pageUrl string) (success bo
     return
 }
 
-func collect(client *http.Client, url string) (imgUrl string, nextUrl string, success boolean) {
+func collect(client *http.Client, url string) (imgUrl string, nextUrl string, success bool) {
     success = false
 
-    req, err := http.NewRequest("GET", *sourceUrl, nil)
+    req, err := http.NewRequest("GET", url, nil)
     if err != nil {
-        fmt.Println(err)
+        fmt.Println("Unable to create page request:", err)
         return
     }
+    req.Close = true
     req.Header.Set("User-Agent", userAgent)
 
     response, err := client.Do(req)
     if err != nil {
-        fmt.Println(err)
+        fmt.Println("Unable to complete page request:", err)
         return
     }
     defer response.Body.Close()
 
     if response.StatusCode >= 400 {
-        fmt.Println("Unexpected source URL response status: %d", response.StatusCode)
+        fmt.Println("Unexpected source URL response status:", response.StatusCode)
         return
     }
     root, err := xmlpath.ParseHTML(response.Body)
     if err != nil {
-        fmt.Println(err)
+        fmt.Println("Unable to parse HTML:", err)
         return
     }
 
-    path := xmlpath.MustCompile(*imageXPath + "/@src")
-    if value, ok := path.String(root); ok {
+    srcPath := xmlpath.MustCompile(*imageXPath)
+    if value, ok := srcPath.String(root); ok {
         imgUrl = value
-    }
-    if (!ok) {
+    } else {
         success = true
         return
     }
-    path := xmlpath.MustCompile(*nextPageXPath + "/@href")
-    if value, ok := path.String(root); ok {
+    hrefPath := xmlpath.MustCompile(*nextPageXPath)
+    if value, ok := hrefPath.String(root); ok {
         nextUrl = value
     }
     return imgUrl, nextUrl, true
 }
 
-func add(client *http.Client, pdf *gofpdf.Fpdf, imgUrl string) (success string) {
+func add(client *http.Client, pdf *gofpdf.Fpdf, imgUrl string) (success bool) {
     success = false
 
-    req, err := http.NewRequest("GET", *sourceUrl, nil)
+    req, err := http.NewRequest("GET", imgUrl, nil)
     if err != nil {
-        fmt.Println(err)
+        fmt.Println("Unable to create image request:", err)
         return
     }
+    req.Close = true
     req.Header.Set("User-Agent", userAgent)
 
     response, err := client.Do(req)
     if err != nil {
-        fmt.Println(err)
+        fmt.Println("Unable to complete image request:", err)
         return
     }
     defer response.Body.Close()
 
-    m, _, err := image.Decode(resp.Body)
-    if err != nil {
-        fmt.Println(err)
+    tp := pdf.ImageTypeFromMime(response.Header["Content-Type"][0])
+    infoPtr := pdf.RegisterImageReader(imgUrl, tp, response.Body)
+    if !pdf.Ok() {
+        return
     }
-    g := m.Bounds()
-
-    height := g.Dy()
-    width := g.Dx()
+    width, height := infoPtr.Extent()
 
     if (height < width) {
-        pdf.AddPageFormat("L", nil)
+        pdf.AddPageFormat("L", gofpdf.SizeType{ Wd: height, Ht: width })
     } else {
-        pdf.AddPage()
+        pdf.AddPageFormat("P", gofpdf.SizeType{ Wd: width, Ht: height })
     }
-
+    pdf.Image(imgUrl, 0, 0, width, height, false, tp, 0, "")
     
+    success = pdf.Ok();
+    return
 }
