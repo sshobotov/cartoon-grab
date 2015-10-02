@@ -7,7 +7,7 @@ import (
     "regexp"
     "net/http"
     "launchpad.net/xmlpath"
-    "code.google.com/p/gofpdf"
+    "github.com/jung-kurt/gofpdf"
     "code.google.com/p/go-uuid/uuid"
 )
 
