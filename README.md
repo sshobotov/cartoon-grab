@@ -1,5 +1,5 @@
-Cartoon grabber
-============
+Manga grabber
+=============
 
 Simple tool to grab cartoon image series from resources with page-by-page viewing model. Written in go language and allows to save images to single PDF file.
 
